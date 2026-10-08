@@ -1,0 +1,1 @@
+{"name":"traceflow-node-recorder","private":true,"type":"module","description":"JavaScript/TypeScript recorder for traceflow","dependencies":{"acorn":"^8.19.0"}}

@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "traceflow"
+version = "0.1.0"
+description = "Record a Python program's execution and reconstruct it visually"
+readme = "README.md"
+requires-python = ">=3.10"
+
+[project.scripts]
+traceflow = "traceflow.__main__:main"
+
+[tool.setuptools]
+packages = ["traceflow"]
+
+[tool.setuptools.package-data]
+traceflow = ["viewer.html", "js/*.mjs", "js/package.json", "js/package-lock.json"]

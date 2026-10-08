@@ -1,0 +1,26 @@
+# Dependencies (re-created by npm / pip)
+node_modules/
+
+# Python caches and build artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+# Traceflow output
+traces/
+*.trace.json
+*.trace.html
+*.trace.db
+
+# Environment files (the two demo fixtures are force-added; see below)
+.env
+.env.*
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+*.swp

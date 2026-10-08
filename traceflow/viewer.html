@@ -1,0 +1,1017 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Traceflow</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap">
+<style>
+/* Layout: instrument-panel workbench. Execution path | call graph over program output | inspector for the selected call. */
+:root {
+  --bg: #0d1015; --panel: #131820; --raise: #1a2029; --line: #252d39; --line-2: #313b4a;
+  --fg: #dde3ea; --muted: #8893a2; --faint: #5d6776;
+  --accent: #8fa8ff; --accent-weak: rgba(143,168,255,.14);
+  --ok: #4fbf86; --err: #f07070; --warn: #e0b04f; --builtin: #b694f2; --lib: #6fb8c9;
+  --hit: rgba(79,191,134,.10); --hit-gutter: #4fbf86;
+  --font-ui: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-code: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  color-scheme: dark;
+}
+@media (prefers-color-scheme: light) { :root:not([data-theme="dark"]) {
+  --bg: #f3f5f8; --panel: #ffffff; --raise: #eef1f6; --line: #dfe4eb; --line-2: #ccd3dd;
+  --fg: #1a2130; --muted: #5b6676; --faint: #8c96a5;
+  --accent: #3d5fd9; --accent-weak: rgba(61,95,217,.10);
+  --ok: #1f8f57; --err: #cf3b3b; --warn: #a77412; --builtin: #7a4fcf; --lib: #2b7f93;
+  --hit: rgba(31,143,87,.09); --hit-gutter: #1f8f57; color-scheme: light; } }
+:root[data-theme="light"] {
+  --bg: #f3f5f8; --panel: #ffffff; --raise: #eef1f6; --line: #dfe4eb; --line-2: #ccd3dd;
+  --fg: #1a2130; --muted: #5b6676; --faint: #8c96a5;
+  --accent: #3d5fd9; --accent-weak: rgba(61,95,217,.10);
+  --ok: #1f8f57; --err: #cf3b3b; --warn: #a77412; --builtin: #7a4fcf; --lib: #2b7f93;
+  --hit: rgba(31,143,87,.09); --hit-gutter: #1f8f57; color-scheme: light; }
+
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.5 var(--font-ui); }
+button { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.mono { font-family: var(--font-code); font-size: 12.5px; }
+
+.app { height: 100%; display: grid; grid-template-rows: auto 1fr; padding-inline: 16px; padding-block: 0 16px; gap: 12px; }
+header.top { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 20px; padding-block: 14px 0; }
+header.top h1 { margin: 0; font-size: 16px; font-weight: 600; letter-spacing: -.01em; }
+header.top h1 .file { font-family: var(--font-code); font-weight: 500; color: var(--accent); }
+.stats { display: flex; flex-wrap: wrap; gap: 6px 18px; color: var(--muted); font-size: 12.5px; }
+.stats b { color: var(--fg); font-weight: 500; font-variant-numeric: tabular-nums; }
+.controls { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+.toggle { display: inline-flex; gap: 6px; align-items: center; font-size: 12.5px; color: var(--muted); cursor: pointer; }
+
+/* Wide layout: the 12px gutters are drag handles (.split). Sizes come from --wt/--wd/--rt/--rb, set by the layout script. */
+.grid { min-height: 0; display: grid; gap: 0;
+  grid-template-columns: var(--wt, 300px) 12px minmax(0, 1fr) 12px var(--wd, 480px);
+  grid-template-rows: minmax(0, var(--rt, 1.2fr)) 12px minmax(0, var(--rb, 1fr));
+  grid-template-areas: "tree s1 graph s2 detail" "tree s1 s3 s2 detail" "tree s1 out s2 detail"; }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; min-height: 0; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
+.panel > h2 { margin: 0; padding: 9px 8px 9px 12px; min-height: 37px; font-size: 11px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); border-bottom: 1px solid var(--line); display: flex; gap: 8px; align-items: center; white-space: nowrap; }
+.panel > h2 .hint { margin-left: auto; text-transform: none; letter-spacing: 0; font-weight: 400; color: var(--faint); overflow: hidden; text-overflow: ellipsis; }
+.scroll { overflow: auto; min-height: 0; flex: 1; }
+#treePanel { grid-area: tree; } #graphPanel { grid-area: graph; } #outPanel { grid-area: out; } #detailPanel { grid-area: detail; }
+#s1 { grid-area: s1; } #s2 { grid-area: s2; } #s3 { grid-area: s3; }
+
+/* resize handles */
+.split { position: relative; touch-action: none; }
+.split[aria-orientation="vertical"] { cursor: col-resize; }
+.split[aria-orientation="horizontal"] { cursor: row-resize; }
+.split::after { content: ""; position: absolute; border-radius: 2px; background: transparent; }
+.split[aria-orientation="vertical"]::after { top: 8px; bottom: 8px; left: 5px; width: 2px; }
+.split[aria-orientation="horizontal"]::after { left: 8px; right: 8px; top: 5px; height: 2px; }
+.split:hover::after, .split.dragging::after, .split:focus-visible::after { background: var(--accent); }
+.split:focus-visible { outline: none; }
+.split.off { pointer-events: none; }
+body.resizing-x, body.resizing-x * { cursor: col-resize !important; user-select: none; }
+body.resizing-y, body.resizing-y * { cursor: row-resize !important; user-select: none; }
+
+/* minimize */
+.pbtn { flex: none; width: 22px; height: 20px; padding: 0; display: inline-grid; place-items: center; margin-left: 4px;
+  border: 1px solid transparent; border-radius: 4px; background: none; color: var(--faint); cursor: pointer; }
+.pbtn:hover { color: var(--fg); background: var(--raise); border-color: var(--line); }
+.pbtn svg { width: 12px; height: 12px; stroke: currentColor; stroke-width: 1.6; fill: none; stroke-linecap: round; }
+#detailPanel:not(.min) > h2 > .pbtn { margin-left: auto; } /* no hint to push it right */
+.panel.min > :not(h2) { display: none !important; }
+.panel.min { align-self: start; }
+.panel.min > h2 { border-bottom: 0; cursor: pointer; }
+.panel.min > h2:hover { color: var(--fg); }
+.panel.min > h2 .hint, .panel.min > h2 .tabs { display: none; }
+.panel.min > h2 .pbtn { margin-left: auto; }
+.panel.min #bottomTitle[hidden] { display: inline; }
+/* a minimized side column becomes a slim vertical bar */
+.panel.col.min { align-self: stretch; }
+.panel.col.min > h2 { writing-mode: vertical-rl; padding: 8px 0; height: 100%; justify-content: flex-start; align-items: center; min-height: 0; }
+.panel.col.min > h2 .pbtn { order: -1; margin: 0 0 8px; }
+
+/* execution path */
+.search { margin: 8px 10px; padding: 6px 9px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); font: 12.5px var(--font-code); }
+.row { display: grid; grid-template-columns: minmax(0,1fr) 44px 52px; align-items: center; gap: 8px; padding: 2px 10px 2px 0; cursor: pointer; white-space: nowrap; border-left: 2px solid transparent; }
+.row:hover { background: var(--raise); }
+.row.sel { background: var(--accent-weak); border-left-color: var(--accent); }
+.row.onpath .nm { color: var(--accent); }
+.row .lbl { display: flex; align-items: center; gap: 6px; min-width: 0; overflow: hidden; }
+.caret { width: 14px; flex: none; text-align: center; color: var(--faint); font-size: 10px; user-select: none; }
+.dot { width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--ok); }
+.dot.raised { background: var(--err); } .dot.caught { background: var(--warn); } .dot.unfinished, .dot.running { background: var(--faint); }
+.nm { overflow: hidden; text-overflow: ellipsis; }
+.tag { font-size: 10px; padding: 0 5px; border-radius: 4px; border: 1px solid currentColor; opacity: .85; flex: none; }
+.tag.builtin { color: var(--builtin); } .tag.library { color: var(--lib); } .tag.generator { color: var(--warn); }
+.wf { position: relative; height: 14px; }
+.wf i { position: absolute; top: 4px; height: 6px; min-width: 2px; border-radius: 2px; background: var(--line-2); }
+.row.sel .wf i { background: var(--accent); }
+.wf::before { content: ""; position: absolute; left: 0; right: 0; top: 6px; height: 2px; background: var(--line); border-radius: 1px; }
+.row .dur { font-size: 10.5px; color: var(--faint); font-variant-numeric: tabular-nums; font-family: var(--font-code); text-align: right; }
+
+/* graph */
+#graph { padding: 8px; }
+#graph svg { display: block; margin: 0 auto; }
+.gnode { cursor: pointer; }
+.gnode rect { fill: var(--raise); stroke: var(--line-2); stroke-width: 1; }
+.gnode.builtin rect { stroke-dasharray: 3 3; }
+.gnode.raised rect { stroke: var(--err); }
+.gnode.onpath rect { stroke: var(--accent); }
+.gnode.sel rect { fill: var(--accent-weak); stroke: var(--accent); stroke-width: 2; }
+.gnode text { fill: var(--fg); font: 500 12px var(--font-code); }
+.gnode text.sub { fill: var(--muted); font: 10.5px var(--font-ui); }
+.gnode.builtin text.t1 { fill: var(--builtin); } .gnode.library text.t1 { fill: var(--lib); }
+.gedge { fill: none; stroke: var(--line-2); stroke-width: 1.2; }
+.gedge.onpath { stroke: var(--accent); stroke-width: 2; }
+.glabel { fill: var(--muted); font: 10.5px var(--font-code); }
+.arrow { fill: var(--line-2); } .arrow.on { fill: var(--accent); }
+
+/* output */
+#out { font: 12.5px/1.55 var(--font-code); padding: 8px 0; }
+.oline { display: grid; grid-template-columns: 64px 1fr; gap: 10px; padding: 0 12px; cursor: pointer; }
+.oline:hover { background: var(--raise); }
+.oline.mine { background: var(--accent-weak); }
+.oline .t { color: var(--faint); text-align: right; font-variant-numeric: tabular-nums; }
+.oline pre { margin: 0; white-space: pre-wrap; word-break: break-word; font: inherit; }
+.oline.stdin pre { color: var(--accent); } .oline.stderr pre { color: var(--err); }
+.oline.catch pre { color: var(--warn); font-style: italic; } .oline.raise pre { color: var(--err); font-style: italic; }
+.empty { color: var(--faint); padding: 12px; font-size: 12.5px; }
+
+/* inspector */
+#detail { padding: 14px 16px 20px; display: flex; flex-direction: column; gap: 16px; }
+.dh { display: flex; flex-direction: column; gap: 6px; }
+.dh .q { font: 600 16px/1.3 var(--font-code); word-break: break-all; }
+.pills { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.pill { font-size: 11.5px; padding: 1px 8px; border-radius: 999px; background: var(--raise); color: var(--muted); border: 1px solid var(--line); }
+.pill.ok { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, transparent); }
+.pill.err { color: var(--err); border-color: color-mix(in srgb, var(--err) 40%, transparent); }
+.pill.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, transparent); }
+.nav { margin-left: auto; display: inline-flex; gap: 4px; align-items: center; font-size: 12px; color: var(--muted); }
+.nav button { border: 1px solid var(--line); background: var(--raise); border-radius: 5px; padding: 0 7px; cursor: pointer; }
+.nav button:disabled { opacity: .35; cursor: default; }
+.sec h3 { margin: 0 0 6px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
+dl.kv { margin: 0; display: grid; grid-template-columns: 96px 1fr; gap: 4px 12px; }
+dl.kv dt { color: var(--muted); font-size: 12.5px; }
+dl.kv dd { margin: 0; min-width: 0; word-break: break-word; font-variant-numeric: tabular-nums; }
+a.jump { color: var(--accent); cursor: pointer; text-decoration: none; font-family: var(--font-code); font-size: 12.5px; }
+a.jump:hover { text-decoration: underline; }
+.loc { color: var(--muted); font-family: var(--font-code); font-size: 12px; }
+.val { font-family: var(--font-code); font-size: 12.5px; background: var(--raise); border-radius: 4px; padding: 0 5px; }
+.exc { border-left: 3px solid var(--err); background: color-mix(in srgb, var(--err) 8%, transparent); padding: 6px 10px; border-radius: 0 6px 6px 0; font-size: 13px; }
+.exc.handled { border-color: var(--warn); background: color-mix(in srgb, var(--warn) 8%, transparent); }
+.list { display: flex; flex-direction: column; }
+.li { display: grid; grid-template-columns: 12px minmax(0,1fr) auto; gap: 8px; align-items: center; padding: 3px 6px; border-radius: 5px; cursor: pointer; }
+.li:hover { background: var(--raise); }
+.li .r { color: var(--faint); font: 11.5px var(--font-code); font-variant-numeric: tabular-nums; }
+.br { display: grid; grid-template-columns: 34px minmax(0,1fr) auto; gap: 8px; align-items: baseline; padding: 3px 0; border-bottom: 1px dashed var(--line); }
+.br:last-child { border-bottom: 0; }
+.br .ln { color: var(--faint); font: 11.5px var(--font-code); text-align: right; }
+.br code { font: 12px var(--font-code); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.br .pill { white-space: nowrap; }
+.src { border: 1px solid var(--line); border-radius: 6px; overflow-x: auto; background: var(--bg); }
+.src table { border-collapse: collapse; width: 100%; font: 12px/1.6 var(--font-code); }
+.src td { padding: 0 8px; white-space: pre; vertical-align: top; }
+.src td.n { color: var(--faint); text-align: right; user-select: none; width: 1%; border-right: 1px solid var(--line); }
+.src td.h { color: var(--hit-gutter); text-align: right; width: 1%; font-size: 10.5px; user-select: none; }
+.src tr.hit td.c { background: var(--hit); }
+.src tr.cold td.c { opacity: .45; }
+.src tr.callsite td.c { box-shadow: inset 3px 0 0 var(--accent); }
+.src tr.raisedat td.c { box-shadow: inset 3px 0 0 var(--err); }
+.legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 11.5px; color: var(--muted); margin-top: 6px; }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; vertical-align: -1px; margin-right: 4px; }
+
+/* security */
+.tabs { display: flex; gap: 2px; margin: -3px 0; }
+.tabs[hidden] { display: none; }
+.tab { border: 0; background: none; padding: 2px 8px; border-radius: 5px; cursor: pointer; color: var(--muted);
+  font: 600 11px var(--font-ui); letter-spacing: .08em; text-transform: uppercase; }
+.tab:hover { color: var(--fg); }
+.tab[aria-selected="true"] { background: var(--raise); color: var(--fg); }
+.tab .n { font-variant-numeric: tabular-nums; color: var(--faint); margin-left: 3px; }
+.tab .n.high { color: var(--err); }
+.sev { font: 600 10px var(--font-ui); padding: 0 6px; border-radius: 4px; text-transform: uppercase; letter-spacing: .05em; border: 1px solid currentColor; flex: none; }
+.sev.high { color: var(--err); } .sev.medium { color: var(--warn); } .sev.low { color: var(--accent); } .sev.info { color: var(--muted); }
+.finding { padding: 10px 12px; border-bottom: 1px solid var(--line); display: flex; flex-direction: column; gap: 4px; cursor: pointer; font: 13px/1.5 var(--font-ui); }
+.finding:hover { background: var(--raise); }
+.finding.mine { background: var(--accent-weak); }
+.finding.nocall { cursor: default; }
+.ft { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.ft b { font-weight: 600; }
+.ft .cat { color: var(--muted); font-size: 11.5px; }
+.finding p { margin: 0; color: var(--muted); font-size: 12.5px; }
+.finding p.fix { color: var(--fg); }
+code.ev { display: block; font: 12px/1.5 var(--font-code); background: var(--raise); border-radius: 4px; padding: 3px 7px; white-space: pre-wrap; word-break: break-all; }
+.refs { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 12px; }
+.refs a { color: var(--accent); font-family: var(--font-code); }
+.secnote { color: var(--faint); font-size: 12px; padding: 8px 12px; }
+.act { display: grid; grid-template-columns: 64px 118px minmax(0,1fr); gap: 10px; padding: 1px 12px; font: 12.5px/1.6 var(--font-code); cursor: pointer; }
+.act:hover { background: var(--raise); }
+.act.mine { background: var(--accent-weak); }
+.act .t { color: var(--faint); text-align: right; font-variant-numeric: tabular-nums; }
+.act .k { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.act .tg { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.act.sensitive .tg { color: var(--err); }
+.act.compact { padding: 0; grid-template-columns: 118px minmax(0,1fr); cursor: default; }
+.act.compact:hover { background: none; }
+.shield { font: 700 10px/14px var(--font-ui); min-width: 14px; padding: 0 3px; border-radius: 4px; text-align: center; flex: none; color: var(--panel); }
+.shield.high { background: var(--err); } .shield.medium { background: var(--warn); } .shield.low { background: var(--accent); }
+.gnode.sec-high rect { stroke: var(--err); stroke-width: 2; } .gnode.sec-medium rect { stroke: var(--warn); stroke-width: 2; }
+.gnode text.secmark { font: 700 10.5px var(--font-ui); }
+.gnode text.secmark.high { fill: var(--err); } .gnode text.secmark.medium { fill: var(--warn); } .gnode text.secmark.low { fill: var(--accent); }
+.sfind { display: grid; grid-template-columns: auto minmax(0,1fr); gap: 4px 8px; align-items: baseline; padding: 4px 0; border-bottom: 1px dashed var(--line); }
+.sfind:last-child { border-bottom: 0; }
+.sfind .loc { grid-column: 2; }
+
+/* live mode */
+.livebar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; font-size: 12.5px; }
+.livebar[hidden] { display: none; }
+.lstatus { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; }
+.lstatus i { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); }
+.lstatus.running i { background: var(--ok); }
+.lstatus.paused i { background: var(--warn); } .lstatus.paused { color: var(--warn); }
+.lstatus.disconnected i { background: var(--err); } .lstatus.disconnected { color: var(--err); }
+@media (prefers-reduced-motion: no-preference) { .lstatus.running i { animation: pulse 1.4s ease-in-out infinite; } }
+@keyframes pulse { 50% { opacity: .35; } }
+.btngroup { display: inline-flex; }
+.btngroup button, .icpt > button, .pbtns button { font-size: 12.5px; padding: 3px 10px; border: 1px solid var(--line-2); background: var(--panel); cursor: pointer; }
+.btngroup button { border-radius: 0; margin-left: -1px; }
+.btngroup button:first-child { border-radius: 6px 0 0 6px; margin-left: 0; }
+.btngroup button:last-child { border-radius: 0 6px 6px 0; }
+.btngroup button:hover:not(:disabled), .icpt > button:hover:not(:disabled), .pbtns button:hover { background: var(--raise); }
+.livebar button:disabled { opacity: .4; cursor: default; }
+.icpt { position: relative; }
+.icpt > button { border-radius: 6px; }
+.menu { position: absolute; z-index: 10; top: calc(100% + 4px); left: 0; min-width: 250px; padding: 8px 10px; display: flex; flex-direction: column; gap: 4px;
+  background: var(--panel); border: 1px solid var(--line-2); border-radius: 8px; box-shadow: 0 6px 24px rgba(0,0,0,.25); }
+.menu[hidden] { display: none; }
+.menu label { display: flex; gap: 8px; align-items: center; cursor: pointer; white-space: nowrap; }
+.menu .loc { white-space: normal; margin-top: 4px; }
+.linkbtn { border: 0; background: none; padding: 0; color: var(--accent); cursor: pointer; font: inherit; text-decoration: underline; }
+.bpinfo { color: var(--err); }
+.lmsg { color: var(--err); }
+.pausecard { border: 1px solid color-mix(in srgb, var(--warn) 55%, transparent); background: color-mix(in srgb, var(--warn) 7%, var(--panel));
+  border-radius: 8px; padding: 12px; display: flex; flex-direction: column; gap: 12px; }
+.pausecard.mini { flex-direction: row; align-items: center; gap: 8px; padding: 8px 12px; font-size: 13px; }
+.pausecard .ph { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
+.pausecard .ph b { font-size: 14px; }
+.pdot { width: 9px; height: 9px; border-radius: 50%; background: var(--warn); flex: none; align-self: center; }
+.edits { display: flex; flex-direction: column; gap: 6px; }
+.edits label { display: grid; grid-template-columns: minmax(70px, auto) 1fr; gap: 10px; align-items: center; }
+.editv { width: 100%; padding: 4px 7px; border-radius: 5px; border: 1px solid var(--line-2); background: var(--bg); color: var(--fg); }
+.editv:focus { border-color: var(--accent); outline: none; }
+dl.kv.vars { grid-template-columns: minmax(70px, auto) 1fr; }
+.pbtns { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.pbtns button { border-radius: 6px; }
+.pbtns button.primary { background: var(--accent); border-color: var(--accent); color: var(--panel); font-weight: 600; }
+.pbtns button.primary:hover { background: color-mix(in srgb, var(--accent) 85%, black); }
+.pbtns button.danger { color: var(--err); border-color: color-mix(in srgb, var(--err) 50%, transparent); }
+.pbtns .sep { width: 1px; align-self: stretch; background: var(--line-2); margin: 0 2px; }
+.perr { color: var(--err); font-size: 12.5px; }
+.perr:empty { display: none; }
+.bpbtn { font-size: 11.5px; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--line); background: var(--raise); color: var(--muted); cursor: pointer; }
+.bpbtn.on { color: var(--err); border-color: color-mix(in srgb, var(--err) 50%, transparent); }
+.src td.n.bpable { cursor: pointer; }
+.src td.n.bpable:hover { color: var(--err); }
+.src td.n.bp { color: var(--panel); background: var(--err); border-radius: 0; font-weight: 600; }
+.src tr.pausedat td.c { background: color-mix(in srgb, var(--warn) 22%, transparent); box-shadow: inset 3px 0 0 var(--warn); }
+.row.paused { box-shadow: inset 3px 0 0 var(--warn); background: color-mix(in srgb, var(--warn) 10%, transparent); }
+.bpm { color: var(--err); font-size: 9px; flex: none; }
+.tag.edited { color: var(--accent); } .tag.pausedtag { color: var(--warn); }
+.dec { font: 600 10px var(--font-ui); text-transform: uppercase; letter-spacing: .04em; padding: 0 5px; border-radius: 4px; border: 1px solid currentColor; }
+.dec.forwarded { color: var(--ok); } .dec.dropped { color: var(--err); }
+.exc.edited { border-color: var(--accent); background: var(--accent-weak); }
+.gnode.pausednode rect { stroke: var(--warn); stroke-width: 2.5; }
+.bpdot { fill: var(--err); }
+.dot.running { background: var(--accent); }
+
+@media (max-width: 1180px) {
+  /* stacked layouts: fixed arrangement, no drag handles; minimize still works */
+  .grid { gap: 12px; grid-template-columns: minmax(240px, 320px) minmax(0, 1fr); grid-template-rows: minmax(0,1fr) minmax(0,1fr) 300px;
+    grid-template-areas: "tree detail" "graph detail" "out out"; }
+  .split { display: none; }
+  .panel.col.min { align-self: start; }
+  .panel.col.min > h2 { writing-mode: horizontal-tb; height: auto; padding: 9px 8px 9px 12px; min-height: 37px; }
+  .panel.col.min > h2 .pbtn { order: 0; margin: 0 0 0 auto; }
+}
+@media (max-width: 760px) {
+  .app { height: auto; } html, body { height: auto; }
+  .grid { grid-template-columns: minmax(0,1fr); grid-template-rows: none; grid-template-areas: "tree" "detail" "graph" "out"; }
+  #treePanel, #outPanel, #graphPanel { height: 340px; } #detailPanel { max-height: none; }
+  .controls { margin-left: 0; }
+}
+@media (prefers-reduced-motion: no-preference) { .row, .li, .oline { transition: background .12s; } }
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="top">
+    <h1>Execution trace · <span class="file" id="scriptName"></span></h1>
+    <div class="stats" id="stats"></div>
+    <div class="livebar" id="livebar" hidden>
+      <span class="lstatus" id="lstatus"><i></i><span>Connecting…</span></span>
+      <span class="btngroup" role="group" aria-label="Program control">
+        <button id="bPause" title="Pause at the next line of your code">Pause</button>
+        <button id="bCont" title="Run until the next breakpoint or intercept">Continue</button>
+        <button id="bInto" title="Step into">Step into</button>
+        <button id="bOver" title="Step over">Step over</button>
+        <button id="bOut" title="Step out">Step out</button>
+      </span>
+      <span class="icpt"><button id="bIcpt" aria-haspopup="true" aria-expanded="false">Intercept <span id="nIcpt"></span> ▾</button>
+        <span class="menu" id="icptMenu" hidden></span></span>
+      <span class="bpinfo" id="bpinfo"></span>
+      <span class="saved loc" id="saved"></span>
+      <span class="lmsg" id="lmsg" role="status" hidden></span>
+    </div>
+    <div class="controls">
+      <label class="toggle"><input type="checkbox" id="showBuiltins" checked> Builtins &amp; library calls</label>
+    </div>
+  </header>
+  <div class="grid">
+    <section class="panel col" id="treePanel">
+      <h2>Execution path <span class="hint">↑ ↓ to step</span><button class="pbtn" data-min="tree"></button></h2>
+      <input class="search" id="filter" placeholder="Filter functions…" aria-label="Filter functions">
+      <div class="scroll" id="tree" role="tree"></div>
+    </section>
+    <div class="split" id="s1" data-split="tree" role="separator" aria-orientation="vertical" tabindex="0" aria-label="Resize execution path (double-click to reset)"></div>
+    <section class="panel" id="graphPanel">
+      <h2>Call graph <span class="hint">click a function · again for next call</span><button class="pbtn" data-min="graph"></button></h2>
+      <div class="scroll" id="graph"></div>
+    </section>
+    <div class="split" id="s3" data-split="rows" role="separator" aria-orientation="horizontal" tabindex="0" aria-label="Resize call graph and output (double-click to reset)"></div>
+    <section class="panel" id="outPanel">
+      <h2><span id="bottomTitle">Program output</span><span class="tabs" id="tabs" role="tablist" hidden>
+        <button class="tab" role="tab" data-tab="out" aria-selected="true">Program output</button>
+        <button class="tab" role="tab" data-tab="findings" aria-selected="false">Findings<span class="n" id="nFind"></span></button>
+        <button class="tab" role="tab" data-tab="activity" aria-selected="false">Activity<span class="n" id="nAct"></span></button>
+      </span><span class="hint" id="bottomHint">click a line to find the call that wrote it</span><button class="pbtn" data-min="out"></button></h2>
+      <div class="scroll" id="out"></div>
+    </section>
+    <div class="split" id="s2" data-split="detail" role="separator" aria-orientation="vertical" tabindex="0" aria-label="Resize inspector (double-click to reset)"></div>
+    <section class="panel col" id="detailPanel">
+      <h2>Inspector<button class="pbtn" data-min="detail"></button></h2>
+      <div class="scroll" id="detail"></div>
+    </section>
+  </div>
+</div>
+<script>
+let DATA = /*__TRACE_DATA__*/null;
+const LIVE = /*__LIVE__*/null;  // set when served by `traceflow run --live`: the page polls for updates
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+let calls, meta, fnByKey, total, baseDir;
+let liveState = LIVE ? "connecting" : null;  // connecting | running | paused | finished | disconnected
+let liveNow = 0, pause = null;
+const callBreaks = new Set(), lineBreaks = new Set();  // function keys; "file\nline"
+let intercepts = new Set();
+const canControl = () => liveState === "running" || liveState === "paused" || liveState === "connecting";
+const short = (p) => {
+  if (!p) return "";
+  const sep = p.charAt(baseDir.length);  // compare case-insensitively: Windows reports d:\ and D:\
+  if (p.toLowerCase().startsWith(baseDir) && (sep === "/" || sep === "\\")) return p.slice(baseDir.length + 1);
+  return p.replace(/^.*[\\/](lib[\\/]python[^\\/]*[\\/])/i, "$1");
+};
+const fmt = (ns) => ns >= 1e9 ? (ns / 1e9).toFixed(2) + " s" : ns >= 1e6 ? (ns / 1e6).toFixed(ns >= 1e8 ? 0 : 1) + " ms" : ns >= 1e3 ? Math.round(ns / 1e3) + " µs" : ns + " ns";
+const statusOf = (c) => c.status === "raised" ? "raised" : (c.handled && c.handled.length ? "caught" : c.status);
+const isAux = (c) => c.kind === "builtin" || c.kind === "library";
+const PRIMARY = new Set(["python", "js"]);  // user-code kinds, rendered without a type tag
+const tagged = (c) => !PRIMARY.has(c.kind);  // show a kind tag only for library/builtin/generator/async
+
+// ---------- security data (present when traced with --security or --live)
+let SEC = null, findings = [], activity = [];
+const SEV_RANK = { high: 0, medium: 1, low: 2, info: 3 };
+const worse = (a, b) => (SEV_RANK[a] ?? 9) <= (SEV_RANK[b] ?? 9) ? a : b;
+const findingsByCall = new Map(), worstByFn = new Map(), countByFn = new Map();
+const worstOf = (list) => list.reduce((w, f) => worse(f.severity, w), "info");
+
+// ---------- derived data. Rebuilt whenever the trace changes (live) or once (saved file).
+const fnKey = (c) => c.kind === "builtin" ? `builtin:${c.qualname}` : `${c.kind}:${c.file}:${c.def_line}:${c.qualname}`;
+function reindex() {
+  calls = DATA.calls; meta = DATA.meta;
+  const now = liveState && liveState !== "finished" ? liveNow : meta.duration_ns;
+  for (const c of calls) { c.dur = Math.max((c.end ?? now) - c.start, 0); c.fn = c.fn || fnKey(c); }
+  for (const c of calls) c.self = c.dur - c.children.reduce((s, i) => s + calls[i].dur, 0);
+  const functions = new Map(), edges = new Map();
+  for (const c of calls) {
+    let f = functions.get(c.fn);
+    if (!f) functions.set(c.fn, f = { key: c.fn, kind: c.kind, name: c.name, qualname: c.qualname, file: c.file,
+      def_line: c.def_line, calls: [], total: 0, self: 0, depth: c.depth, raised: 0 });
+    f.calls.push(c.id); f.total += c.dur; f.self += c.self; f.depth = Math.min(f.depth, c.depth); f.raised += c.status === "raised";
+    if (c.parent != null) {
+      const p = calls[c.parent], k = p.fn + "→" + c.fn;
+      let e = edges.get(k); if (!e) edges.set(k, e = { from: p.fn, to: c.fn, count: 0, total: 0 });
+      e.count++; e.total += c.dur;
+    }
+  }
+  DATA.functions = [...functions.values()]; DATA.edges = [...edges.values()];
+  fnByKey = Object.fromEntries(DATA.functions.map((f) => [f.key, f]));
+  total = Math.max(now, 1);
+  baseDir = (meta.root || meta.script.replace(/[\\/][^\\/]*$/, "")).toLowerCase();
+  SEC = DATA.security || null; findings = SEC ? SEC.findings : []; activity = SEC ? SEC.activity : [];
+  findingsByCall.clear(); worstByFn.clear(); countByFn.clear();
+  for (const f of findings) {
+    if (f.call == null || !calls[f.call]) continue;
+    if (!findingsByCall.has(f.call)) findingsByCall.set(f.call, []);
+    findingsByCall.get(f.call).push(f);
+    const fn = calls[f.call].fn;
+    worstByFn.set(fn, worse(f.severity, worstByFn.get(fn) || "info"));
+    countByFn.set(fn, (countByFn.get(fn) || 0) + 1);
+  }
+}
+reindex();
+let tab = SEC && findings.some((f) => f.severity === "high" || f.severity === "medium") ? "findings" : "out";
+
+let sel = null, showAux = true, filterText = "";
+const collapsed = new Set();
+try { showAux = localStorage.getItem("traceflow.aux") !== "0"; } catch (e) {}
+$("#showBuiltins").checked = showAux;
+
+// ---------- header
+function renderHeader() {
+  const name = meta.script.split(/[\\/]/).pop();
+  $("#scriptName").textContent = short(meta.script) || meta.script;
+  document.title = (liveState === "paused" ? "⏸ " : liveState === "running" ? "▶ " : "") + "Trace · " + name;
+  const running = liveState === "running" || liveState === "paused" || liveState === "connecting";
+  $("#stats").innerHTML = [
+    ["Wall time", fmt(running ? liveNow : meta.duration_ns)],
+    ["Calls", (running ? calls.length : meta.call_count) + (meta.truncated ? " (truncated)" : "")],
+    ["Functions", DATA.functions.length],
+    ...(running ? [] : [["Exit", meta.error ? esc(meta.error) : meta.exit_status]]),
+    [meta.lang === "javascript" ? "Node" : "Python", meta.python], ["Recorded", (meta.recorded_at || "").replace("T", " ")],
+    ...(SEC && !running && (findings.length || !LIVE) ? [["Findings", `${SEC.summary.high} high · ${SEC.summary.medium} medium · ${SEC.summary.low} low`]] : []),
+  ].map(([k, v]) => `<span>${k} <b>${v}</b></span>`).join("");
+}
+
+// ---------- helpers
+function ancestors(id) { const out = []; for (let c = calls[id]; c; c = c.parent == null ? null : calls[c.parent]) out.push(c.id); return out; }
+function subtree(id, acc = new Set()) { acc.add(id); for (const ch of calls[id].children) subtree(ch, acc); return acc; }
+function visibleChildren(c) { return c.children.filter((i) => showAux || !isAux(calls[i])); }
+function matches(c) { return !filterText || c.qualname.toLowerCase().includes(filterText); }
+const matchCache = new Map();
+function subtreeMatches(id) {
+  if (!filterText) return true;
+  if (matchCache.has(id)) return matchCache.get(id);
+  const c = calls[id]; const r = matches(c) || visibleChildren(c).some(subtreeMatches);
+  matchCache.set(id, r); return r;
+}
+
+function shield(list) {
+  if (!list || !list.length) return "";
+  const w = worstOf(list);
+  return `<span class="shield ${w}" title="${list.length} security finding${list.length > 1 ? "s" : ""}: ${esc(list.map((f) => f.title).join("; "))}">${list.length > 1 ? list.length : "!"}</span>`;
+}
+
+// ---------- execution tree
+let rowOrder = [];
+function renderTree() {
+  matchCache.clear(); rowOrder = [];
+  const path = new Set(sel != null ? ancestors(sel) : []);
+  const html = [];
+  const roots = calls.filter((c) => c.parent == null);
+  const walk = (c, depth) => {
+    if (!showAux && isAux(c)) return;
+    if (!subtreeMatches(c.id)) return;
+    const kids = visibleChildren(c);
+    const open = !collapsed.has(c.id) || filterText;
+    rowOrder.push(c.id);
+    const left = (c.start / total) * 100, width = Math.max((c.dur / total) * 100, 0.6);
+    const st = statusOf(c);
+    const isPaused = pause && pause.call === c.id;
+    html.push(`<div class="row${c.id === sel ? " sel" : ""}${path.has(c.id) && c.id !== sel ? " onpath" : ""}${isPaused ? " paused" : ""}" data-id="${c.id}" role="treeitem" aria-selected="${c.id === sel}" style="padding-left:${6 + depth * 14}px">
+      <div class="lbl"><span class="caret" data-toggle="${kids.length ? c.id : ""}">${kids.length ? (open ? "▾" : "▸") : ""}</span>
+      <span class="dot ${st}" title="${st}"></span>${callBreaks.has(c.fn) ? `<span class="bpm" title="Breakpoint: pauses on every call">●</span>` : ""}<span class="nm mono" title="${esc(c.qualname)}">${esc(c.qualname)}</span>
+      ${tagged(c) ? `<span class="tag ${c.kind}">${c.kind}</span>` : ""}${c.edited ? `<span class="tag edited" title="Arguments edited in the viewer">edited</span>` : ""}${shield(findingsByCall.get(c.id))}</div>
+      <div class="wf" title="${fmt(c.dur)} · started +${fmt(c.start)}"><i style="left:${left}%;width:${Math.min(width, 100 - left)}%"></i></div><span class="dur">${fmt(c.dur)}</span></div>`);
+    if (open) kids.forEach((k) => walk(calls[k], depth + 1));
+  };
+  roots.forEach((r) => walk(r, 0));
+  $("#tree").innerHTML = html.join("") || (calls.length ? `<div class="empty">No calls match “${esc(filterText)}”.</div>`
+    : `<div class="empty">${liveState === "connecting" || liveState === "running" ? "Waiting for the program to start…" : "No calls were recorded."}</div>`);
+}
+$("#tree").addEventListener("click", (e) => {
+  const t = e.target.closest("[data-toggle]");
+  if (t && t.dataset.toggle !== "") { const id = +t.dataset.toggle; collapsed.has(id) ? collapsed.delete(id) : collapsed.add(id); renderTree(); return; }
+  const r = e.target.closest(".row"); if (r) select(+r.dataset.id);
+});
+$("#filter").addEventListener("input", (e) => { filterText = e.target.value.trim().toLowerCase(); renderTree(); });
+$("#showBuiltins").addEventListener("change", (e) => {
+  showAux = e.target.checked; try { localStorage.setItem("traceflow.aux", showAux ? "1" : "0"); } catch (err) {}
+  if (!showAux && sel != null && isAux(calls[sel])) sel = calls[sel].parent;
+  renderAll();
+});
+document.addEventListener("keydown", (e) => {
+  if (e.target.tagName === "INPUT" || e.target.closest(".split") || !rowOrder.length) return;
+  if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+  e.preventDefault();
+  const i = rowOrder.indexOf(sel);
+  const n = e.key === "ArrowDown" ? Math.min(i + 1, rowOrder.length - 1) : Math.max(i - 1, 0);
+  select(rowOrder[i < 0 ? 0 : n]);
+  const el = $(`.row[data-id="${sel}"]`); if (el) el.scrollIntoView({ block: "nearest" });
+});
+
+// ---------- call graph (functions as nodes, layered by first depth reached)
+function renderGraph() {
+  const fns = DATA.functions.filter((f) => showAux || (f.kind !== "builtin" && f.kind !== "library"));
+  const keys = new Set(fns.map((f) => f.key));
+  const edges = DATA.edges.filter((e) => keys.has(e.from) && keys.has(e.to));
+  const firstStart = (f) => calls[f.calls[0]].start;
+  const layers = [];
+  fns.forEach((f) => { (layers[f.depth] ||= []).push(f); });
+  const L = layers.filter(Boolean); L.forEach((l) => l.sort((a, b) => firstStart(a) - firstStart(b)));
+  const H = 44, VG = 46, HG = 18, pos = {};
+  const w = (f) => Math.max(110, Math.max(f.qualname.length * 7.4, 80) + 26) + (countByFn.has(f.key) ? 30 : 0);
+  const rowW = L.map((l) => l.reduce((s, f) => s + w(f), 0) + HG * (l.length - 1));
+  const W = Math.max(...rowW, 300) + 60;
+  L.forEach((l, i) => { let x = (W - rowW[i]) / 2; l.forEach((f) => { pos[f.key] = { x, y: 20 + i * (H + VG), w: w(f), layer: i }; x += w(f) + HG; }); });
+  const Ht = 20 + L.length * (H + VG);
+  const pathFns = new Set(), pathEdges = new Set();
+  if (sel != null) { const a = ancestors(sel); a.forEach((id) => pathFns.add(calls[id].fn));
+    for (let i = 0; i < a.length - 1; i++) pathEdges.add(calls[a[i + 1]].fn + "→" + calls[a[i]].fn); }
+  const selFn = sel != null ? calls[sel].fn : null;
+  let svg = `<svg width="${W}" height="${Ht}" viewBox="0 0 ${W} ${Ht}" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Call graph">
+    <defs><marker id="ah" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path class="arrow" d="M0,0 L8,4 L0,8 z"/></marker>
+    <marker id="ahOn" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path class="arrow on" d="M0,0 L8,4 L0,8 z"/></marker></defs>`;
+  for (const e of edges) {
+    const a = pos[e.from], b = pos[e.to]; const on = pathEdges.has(e.from + "→" + e.to);
+    let d, lx, ly;
+    if (b.layer > a.layer) {
+      const x1 = a.x + a.w / 2, y1 = a.y + H, x2 = b.x + b.w / 2, y2 = b.y - 2, my = (y1 + y2) / 2;
+      d = `M${x1},${y1} C${x1},${my} ${x2},${my} ${x2},${y2}`; lx = (x1 + x2) / 2 + 6; ly = my + 4;
+    } else { // recursion or call back up the tree: loop around the right side
+      const x1 = a.x + a.w, y1 = a.y + H / 2, x2 = b.x + b.w, y2 = b.y + H / 2 + (a === b ? 8 : 0), bx = Math.max(x1, x2) + 34;
+      d = `M${x1},${y1 - (a === b ? 8 : 0)} C${bx},${y1} ${bx},${y2} ${x2 + 2},${y2}`; lx = bx - 8; ly = (y1 + y2) / 2 + 4;
+    }
+    svg += `<path class="gedge${on ? " onpath" : ""}" d="${d}" marker-end="url(#${on ? "ahOn" : "ah"})"/>`;
+    if (e.count > 1) svg += `<text class="glabel" x="${lx}" y="${ly}">×${e.count}</text>`;
+  }
+  for (const f of fns) {
+    const p = pos[f.key];
+    const sev = worstByFn.get(f.key);
+    const cls = ["gnode", f.kind, f.raised ? "raised" : "", sev === "high" || sev === "medium" ? "sec-" + sev : "",
+      f.key === selFn ? "sel" : pathFns.has(f.key) ? "onpath" : "",
+      pause && pause.call != null && calls[pause.call] && calls[pause.call].fn === f.key ? "pausednode" : ""].join(" ");
+    const sub = `${f.calls.length} call${f.calls.length > 1 ? "s" : ""} · ${fmt(f.total)}${f.raised ? ` · ${f.raised} raised` : ""}`;
+    const mark = sev ? `<text class="secmark ${sev}" x="${p.x + p.w - 10}" y="${p.y + 19}" text-anchor="end">⚠${countByFn.get(f.key) > 1 ? " " + countByFn.get(f.key) : ""}</text>` : "";
+    svg += `<g class="${cls}" data-fn="${esc(f.key)}" tabindex="0" role="button" aria-label="${esc(f.qualname)}"><title>${esc(f.qualname)}${f.file ? "\n" + esc(short(f.file)) + ":" + f.def_line : ""}</title>
+      <rect x="${p.x}" y="${p.y}" width="${p.w}" height="${H}" rx="6"/>
+      <text class="t1" x="${p.x + 12}" y="${p.y + 19}">${esc(f.qualname)}</text>
+      <text class="sub" x="${p.x + 12}" y="${p.y + 35}">${sub}</text>${mark}${callBreaks.has(f.key) ? `<circle class="bpdot" cx="${p.x + 5}" cy="${p.y + 5}" r="3.5"><title>Breakpoint</title></circle>` : ""}</g>`;
+  }
+  $("#graph").innerHTML = svg + "</svg>";
+}
+function pickFn(key) {
+  const f = fnByKey[key]; if (!f) return;
+  const i = f.calls.indexOf(sel);
+  select(f.calls[i >= 0 ? (i + 1) % f.calls.length : 0], true);
+}
+$("#graph").addEventListener("click", (e) => { const g = e.target.closest(".gnode"); if (g) pickFn(g.dataset.fn); });
+$("#graph").addEventListener("keydown", (e) => { const g = e.target.closest(".gnode"); if (g && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); pickFn(g.dataset.fn); } });
+
+// ---------- program output
+function outText(e) {
+  if (e.type === "catch") return `⤷ ${e.exc} caught in ${calls[e.call].qualname} (line ${e.line})`;
+  if (e.type === "raise") { const c = calls[e.call]; return `✕ ${c.qualname} raised ${(c.exception || {}).type || "an exception"}`; }
+  if (e.type === "stdin") return "› " + e.text.replace(/\n$/, "");
+  return e.text;
+}
+function renderOut() {
+  const mine = sel != null ? subtree(sel) : new Set();
+  const evs = []; // merge consecutive writes from the same call (print sends text and "\n" separately)
+  for (const e of DATA.events) {
+    if (e.type === "raise" && isAux(calls[e.call])) continue;
+    const last = evs[evs.length - 1];
+    if (last && (e.type === "stdout" || e.type === "stderr") && last.type === e.type && last.call === e.call) last.text += e.text;
+    else evs.push({ ...e });
+  }
+  $("#out").innerHTML = evs.map((e) => `<div class="oline ${e.type}${mine.has(e.call) ? " mine" : ""}" data-id="${e.call ?? ""}" title="${e.call != null ? esc(calls[e.call].qualname) : ""}">
+    <span class="t">+${fmt(e.t)}</span><pre>${esc(outText(e).replace(/\n$/, ""))}</pre></div>`).join("") || `<div class="empty">The program produced no output.</div>`;
+}
+$("#out").addEventListener("click", (e) => {
+  if (e.target.closest("a[href]")) return;
+  const l = e.target.closest(".oline, .finding, .act"); if (l && l.dataset.id !== "") select(+l.dataset.id, true);
+});
+
+// ---------- security: findings + activity
+const shortLoc = (file, line) => file ? `${esc(short(file))}${line ? ":" + line : ""}` : "";
+function findingHtml(f, mine) {
+  const where = [shortLoc(f.file, f.line), f.call != null ? esc(calls[f.call].qualname) : ""].filter(Boolean).join(" · ");
+  const refs = (f.refs || []).map((r) => `<a href="https://osv.dev/vulnerability/${encodeURIComponent(r.id)}" target="_blank" rel="noopener" title="${esc(r.summary)}">${esc(r.id)}</a>`).join("");
+  return `<div class="finding${mine ? " mine" : ""}${f.call == null ? " nocall" : ""}" data-id="${f.call ?? ""}">
+    <div class="ft"><span class="sev ${f.severity}">${f.severity}</span><b>${esc(f.title)}</b><span class="cat">${esc(f.category)}</span></div>
+    <p>${esc(f.detail)}</p>${f.fix ? `<p class="fix">Fix: ${esc(f.fix)}</p>` : ""}
+    ${f.evidence ? `<code class="ev">${esc(f.evidence)}</code>` : ""}${refs ? `<div class="refs">${refs}</div>` : ""}
+    ${where ? `<span class="loc">${where}</span>` : ""}</div>`;
+}
+// highlight what happened inside the selected call; the entry point contains everything, so skip it there
+const secScope = () => sel != null && calls[sel].parent != null ? subtree(sel) : new Set();
+function renderFindings() {
+  const mine = secScope();
+  const notes = (SEC.notes || []).map((n) => `<div class="secnote">${esc(n)}</div>`).join("")
+    + (SEC.redacted ? `<div class="secnote">${SEC.redacted} detected secret${SEC.redacted > 1 ? "s are" : " is"} masked throughout this trace.</div>` : "");
+  $("#out").innerHTML = (findings.length ? findings.map((f) => findingHtml(f, f.call != null && mine.has(f.call))).join("")
+    : `<div class="empty">${canControl() ? "Findings are worked out when the program finishes. Activity updates live."
+      : "No security findings in the code that ran. Paths the program didn't take weren't checked."}</div>`) + notes;
+}
+const ACT_LIMIT = 3000;
+function renderActivity() {
+  const mine = secScope();
+  const rows = activity.slice(0, ACT_LIMIT).map((a) => `<div class="act${a.sensitive ? " sensitive" : ""}${a.call != null && mine.has(a.call) ? " mine" : ""}" data-id="${a.call ?? ""}"
+    title="${esc(a.target)}${a.file ? "\n" + esc(short(a.file)) + ":" + a.line : ""}"><span class="t">+${fmt(a.t)}</span><span class="k">${esc(a.kind)} · ${esc(a.op)}</span><span class="tg">${a.decision ? `<span class="dec ${a.decision}">${a.decision}</span> ` : ""}${esc(a.target)}</span></div>`);
+  $("#out").innerHTML = (rows.join("") || `<div class="empty">The program didn't open files, start processes, connect to the network or run dynamic code.</div>`)
+    + (activity.length > ACT_LIMIT ? `<div class="secnote">Showing the first ${ACT_LIMIT} of ${activity.length} entries.</div>` : "");
+}
+const HINTS = { out: "click a line to find the call that wrote it", findings: "click a finding to jump to the call",
+  activity: "files, processes, network, SQL and eval/exec · red = sensitive" };
+function renderBottom() {
+  if (SEC) {
+    $("#tabs").hidden = false; $("#bottomTitle").hidden = true;
+    document.querySelectorAll("#tabs .tab").forEach((b) => b.setAttribute("aria-selected", String(b.dataset.tab === tab)));
+    const high = SEC.summary.high;
+    $("#nFind").textContent = findings.length; $("#nFind").className = "n" + (high ? " high" : "");
+    $("#nAct").textContent = activity.length;
+  }
+  $("#bottomHint").textContent = HINTS[tab];
+  if (tab === "findings") renderFindings(); else if (tab === "activity") renderActivity(); else renderOut();
+}
+$("#tabs").addEventListener("click", (e) => { const b = e.target.closest(".tab"); if (b) { tab = b.dataset.tab; renderBottom(); } });
+
+// ---------- inspector
+function link(id, label) { return `<a class="jump" data-id="${id}">${esc(label ?? calls[id].qualname)}</a>`; }
+function statusPill(c) {
+  const st = statusOf(c);
+  if (st === "raised") return `<span class="pill err">raised ${esc((c.exception || {}).type || "")}</span>`;
+  if (st === "caught") return `<span class="pill warn">returned · caught ${c.handled.length}</span>`;
+  if (st === "suspended") return `<span class="pill warn">yielded / returned</span>`;
+  if (st === "unfinished") return `<span class="pill">unfinished</span>`;
+  if (st === "running") return `<span class="pill">running</span>`;
+  return `<span class="pill ok">returned</span>`;
+}
+function branchPill(b) {
+  if (!b.reached) return `<span class="pill">not reached</span>`;
+  const t = b.taken || [];
+  const cls = t.includes("except") ? "warn" : t.length === 1 && t[0] === "true" ? "ok" : t.length === 1 && t[0] === "false" ? "err" : "";
+  return `<span class="pill ${cls}">${esc(b.outcome)}</span>`;
+}
+function renderSource(c) {
+  const s = DATA.sources[c.source]; if (!s || !s.lines.length) return "";
+  let lo = 0, hi = s.lines.length;
+  if (s.name === "<module>") { // whole file: show only the stretch that ran at module level
+    const hitLines = Object.keys(c.lines).map(Number);
+    if (hitLines.length) { lo = Math.max(Math.min(...hitLines) - s.start - 2, 0); hi = Math.min(Math.max(...hitLines) - s.start + 3, s.lines.length); }
+  }
+  const brLines = new Set((c.branches || []).map((b) => b.line));
+  const childSites = new Set(c.children.map((i) => calls[i].caller_line));
+  const raisedAt = c.exception && c.exception.line;
+  const pausedAt = pause && pause.call === c.id && pause.kind !== "call" ? pause.line : null;
+  if (pausedAt != null && (pausedAt - s.start < lo || pausedAt - s.start >= hi)) {  // keep the paused line in view
+    lo = Math.max(Math.min(lo, pausedAt - s.start - 2), 0); hi = Math.min(Math.max(hi, pausedAt - s.start + 3), s.lines.length);
+  }
+  const bpOn = canControl();
+  let rows = "";
+  for (let i = lo; i < hi; i++) {
+    const ln = s.start + i, hits = c.lines[ln] || 0, txt = s.lines[i];
+    const blank = !txt.trim() || /^\s*#/.test(txt);
+    const bp = lineBreaks.has(s.file + "\n" + ln);
+    const cls = [hits ? "hit" : blank ? "" : "cold", childSites.has(ln) ? "callsite" : "", raisedAt === ln ? "raisedat" : "",
+      pausedAt === ln ? "pausedat" : ""].join(" ");
+    rows += `<tr class="${cls}"><td class="n${bp ? " bp" : ""}${bpOn ? " bpable" : ""}"${bpOn ? ` data-bpfile="${esc(s.file)}" data-bpline="${ln}" title="${bp ? "Remove breakpoint" : "Pause when this line is about to run"}"` : ""}>${ln}</td><td class="h">${hits ? (hits > 1 ? "×" + hits : "●") : brLines.has(ln) ? "○" : ""}</td><td class="c">${esc(txt) || " "}</td></tr>`;
+  }
+  return `<div class="sec"><h3>Source · ${esc(short(s.file))}</h3><div class="src"><table>${rows}</table></div>
+    <div class="legend"><span><i style="background:var(--hit-gutter)"></i>executed (× = times)</span><span><i style="background:var(--accent)"></i>call made here</span><span><i style="background:var(--err)"></i>raised here</span><span style="opacity:.6">dim = did not run</span>
+    ${bpOn ? `<span><i style="background:var(--err);border-radius:50%"></i>breakpoint: click a line number</span>` : ""}${pausedAt != null ? `<span><i style="background:var(--warn)"></i>paused here</span>` : ""}</div></div>`;
+}
+function renderDetail() {
+  const el = $("#detail");
+  if (sel == null) { el.innerHTML = `<div class="empty">Select a call in the execution path, graph, or output.</div>`; return; }
+  const c = calls[sel], f = fnByKey[c.fn], n = f.calls.indexOf(c.id);
+  const parent = c.parent != null ? calls[c.parent] : null;
+  const kids = c.children.map((i) => calls[i]);
+  const origin = c.kind === "builtin" ? `<span class="loc">C function${c.module ? " in " + esc(c.module) : ""}</span>` : `<span class="loc">${esc(short(c.file))}:${c.def_line}</span>`;
+  const callSite = c.caller_file ? `<span class="loc">${esc(short(c.caller_file))}:${c.caller_line}</span>` : "";
+  const breakable = canControl() && c.kind !== "builtin";
+  let h = pauseCard(c);
+  h += `<div class="dh"><div class="q">${esc(c.qualname)}</div><div class="pills">${statusPill(c)}
+    ${tagged(c) ? `<span class="pill">${c.kind}</span>` : ""}<span class="pill">depth ${c.depth}</span>
+    ${breakable ? `<button class="bpbtn${callBreaks.has(c.fn) ? " on" : ""}" data-bpfn="${esc(c.fn)}" title="Pause every time ${esc(c.qualname)} is called, before its first line runs">${callBreaks.has(c.fn) ? "● Breakpoint on" : "○ Break on call"}</button>` : ""}
+    <span class="nav">call ${n + 1} of ${f.calls.length} <button id="prevInv" ${n <= 0 ? "disabled" : ""} aria-label="Previous call">‹</button><button id="nextInv" ${n >= f.calls.length - 1 ? "disabled" : ""} aria-label="Next call">›</button></span></div></div>`;
+  if (c.edited) h += `<div class="exc edited"><b>Arguments edited in the viewer</b>${Object.entries(c.edited).map(([k, v]) =>
+    `<div class="mono">${esc(k)}: <span class="val">${esc(v.from)}</span> → <span class="val">${esc(v.to)}</span></div>`).join("")}</div>`;
+  h += `<div class="sec"><dl class="kv">
+    <dt>Called by</dt><dd>${parent ? link(parent.id) + " " + callSite : `<span class="loc">program entry</span> ${callSite}`}</dd>
+    <dt>Defined at</dt><dd>${origin}</dd>
+    <dt>Duration</dt><dd><b>${fmt(c.dur)}</b> <span class="loc">· self ${fmt(c.self)} · started +${fmt(c.start)}</span></dd>
+    ${c.args && Object.keys(c.args).length ? `<dt>Arguments</dt><dd>${Object.entries(c.args).map(([k, v]) => `<div><span class="loc">${esc(k)} =</span> <span class="val">${esc(v)}</span></div>`).join("")}</dd>` : ""}
+    ${c.status === "returned" && c.return != null ? `<dt>Returned</dt><dd><span class="val">${esc(c.return)}</span></dd>` : ""}
+    </dl></div>`;
+  if (c.exception) h += `<div class="exc"><b>${esc(c.exception.type)}</b>: ${esc(c.exception.message)}${c.exception.line ? ` <span class="loc">· line ${c.exception.line}</span>` : ""}<div class="loc">propagated to ${parent ? esc(parent.qualname) : "the caller"}</div></div>`;
+  for (const x of c.handled || []) h += `<div class="exc handled"><b>${esc(x.type)}</b> raised at line ${x.line}, caught here and resumed at line ${x.caught_at}<div class="loc">${esc(x.message)}</div></div>`;
+  const fs = findingsByCall.get(c.id) || [], acts = activity.filter((a) => a.call === c.id);
+  if (fs.length) h += `<div class="sec"><h3>Security findings (${fs.length})</h3>${fs.map((f) =>
+    `<div class="sfind"><span class="sev ${f.severity}">${f.severity}</span><b>${esc(f.title)}</b><span class="loc">${esc(f.fix || f.category)}</span></div>`).join("")}</div>`;
+  if (acts.length) h += `<div class="sec"><h3>Activity (${acts.length})</h3><div class="list">${acts.slice(0, 50).map((a) =>
+    `<div class="act compact${a.sensitive ? " sensitive" : ""}" title="${esc(a.target)}"><span class="k">${esc(a.kind)} · ${esc(a.op)}</span><span class="tg">${esc(a.target)}</span></div>`).join("")}</div></div>`;
+  const vk = kids.filter((k) => showAux || !isAux(k));
+  h += `<div class="sec"><h3>Calls made (${vk.length})</h3>${vk.length ? `<div class="list">${vk.map((k) =>
+    `<div class="li" data-id="${k.id}"><span class="dot ${statusOf(k)}"></span><span class="mono" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(k.qualname)}${k.caller_line != null ? ` <span class="loc">line ${k.caller_line}</span>` : ""}</span><span class="r">${fmt(k.dur)}</span></div>`).join("")}</div>` : `<div class="loc">None. This call is a leaf.</div>`}</div>`;
+  if (c.branches && c.branches.length) h += `<div class="sec"><h3>Branches taken</h3>${c.branches.map((b) =>
+    `<div class="br"><span class="ln">${b.line}</span><code title="${esc(b.text)}">${esc(b.text)}</code>${branchPill(b)}</div>`).join("")}</div>`;
+  const sub = subtree(c.id);
+  const outs = DATA.events.filter((e) => (e.type === "stdout" || e.type === "stdin" || e.type === "stderr") && sub.has(e.call));
+  if (outs.length) h += `<div class="sec"><h3>Output during this call</h3><div class="src"><table><tr><td class="c">${esc(outs.map((e) => e.type === "stdin" ? "› " + e.text : e.text).join("").replace(/\n$/, ""))}</td></tr></table></div></div>`;
+  h += renderSource(c);
+  el.innerHTML = h;
+  const nav = (d) => select(f.calls[n + d], true);
+  $("#prevInv")?.addEventListener("click", () => nav(-1));
+  $("#nextInv")?.addEventListener("click", () => nav(1));
+}
+$("#detail").addEventListener("click", (e) => {
+  const act = e.target.closest("[data-act]");
+  if (act) { sendAction(act.dataset.act); return; }
+  const bpf = e.target.closest("[data-bpfn]");
+  if (bpf) { toggleSet(callBreaks, bpf.dataset.bpfn); pushConfig(); return; }
+  const bpl = e.target.closest("[data-bpline]");
+  if (bpl) { toggleSet(lineBreaks, bpl.dataset.bpfile + "\n" + bpl.dataset.bpline); pushConfig(); return; }
+  const j = e.target.closest("[data-id]"); if (j && j.dataset.id !== "") select(+j.dataset.id, true);
+});
+$("#detail").addEventListener("keydown", (e) => {  // Enter in an edit box = continue with the edits
+  if (e.key === "Enter" && e.target.matches(".editv")) { e.preventDefault(); sendAction("continue"); }
+});
+
+// ---------- live: pause card, controls, polling
+const REASONS = { breakpoint: "Paused at a breakpoint", step: "Paused after a step", paused: "Paused" };
+const OP_VERBS = { process: "start a process", network: "make a network request", file: "access a file", delete: "delete a file",
+  database: "run a SQL query", code: "run code from a string", native: "load a native library" };
+function pauseCard(c) {
+  if (!pause || !canControl()) return "";
+  const p = pause, here = p.call === c.id;
+  if (!here) return `<div class="pausecard mini"><span class="pdot"></span><span>${esc(REASONS[p.reason] || "Intercepted")} in
+    ${p.call != null && calls[p.call] ? link(p.call, p.func) : esc(p.func || "?")}</span></div>`;
+  const icpt = p.kind === "intercept";
+  const title = icpt ? `Intercepted · ${esc((LIVE.intercepts || {})[p.op.rule] || p.op.rule)}` : esc(REASONS[p.reason] || "Paused");
+  const where = `${esc(p.func || "")} · ${shortLoc(p.file, p.line)}`;
+  let h = `<div class="pausecard" id="pauseCard"><div class="ph"><span class="pdot"></span><b>${title}</b><span class="loc">${where}</span></div>`;
+  if (icpt) h += `<div class="sec"><h3>The program is about to ${esc(OP_VERBS[p.op.kind] || p.op.kind)} (${esc(p.op.op)})</h3><code class="ev">${esc(p.op.target)}</code></div>`;
+  else if (p.kind === "call") h += `<div class="loc">About to start ${esc(p.func)}${p.editable.length ? ". Change its arguments below, then continue." : "."}</div>`;
+  else h += `<div class="loc">Line ${p.line} is about to run.</div>`;
+  if (p.editable.length) {
+    h += `<div class="sec"><h3>Arguments</h3><div class="edits">${p.editable.map((name) => {
+      const v = p.locals[name] ?? "";
+      return `<label><span class="mono">${esc(name)}</span><input class="editv mono" data-name="${esc(name)}" data-orig="${esc(v)}" value="${esc(v)}" spellcheck="false" autocomplete="off"></label>`;
+    }).join("")}</div><div class="loc">Python values: 'text' (with quotes), 42, [1, 2], {'k': 1}, True, None. Long values shown with … can't be edited.</div></div>`;
+  }
+  const vars = Object.entries(p.locals).filter(([k]) => !p.editable.includes(k));
+  if (vars.length) h += `<div class="sec"><h3>Variables</h3><dl class="kv vars">${vars.map(([k, v]) =>
+    `<dt class="mono">${esc(k)}</dt><dd><span class="val">${esc(v)}</span></dd>`).join("")}</dl></div>`;
+  h += `<div class="pbtns">${icpt
+    ? `<button class="primary" data-act="forward" title="Let it happen">Forward</button><button class="danger" data-act="drop" title="Block it: the program gets a PermissionError">Drop</button>`
+    : `<button class="primary" data-act="continue">Continue</button>`}
+    <span class="sep"></span><button data-act="step_into" title="Run to the next line, entering any function it calls">Step into</button>
+    <button data-act="step_over" title="Run to the next line in this function">Step over</button>
+    <button data-act="step_out" title="Run until this function returns">Step out</button></div><div class="perr" id="pauseErr" role="alert"></div></div>`;
+  return h;
+}
+const toggleSet = (s, v) => s.has(v) ? s.delete(v) : s.add(v);
+const TOKEN = LIVE ? new URLSearchParams(location.search).get("t") : null;
+async function api(path, body) {
+  const r = await fetch(path, { method: body ? "POST" : "GET", cache: "no-store",
+    headers: { "X-Traceflow-Token": TOKEN, ...(body ? { "Content-Type": "application/json" } : {}) },
+    body: body ? JSON.stringify(body) : undefined });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(d.error || `Request failed (${r.status})`);
+  return d;
+}
+async function pushConfig() {
+  if (!canControl()) return;
+  try {
+    const d = await api("/api/config", { call_breaks: [...callBreaks], intercepts: [...intercepts],
+      line_breaks: [...lineBreaks].map((k) => { const i = k.lastIndexOf("\n"); return [k.slice(0, i), +k.slice(i + 1)]; }) });
+    syncConfig(d.config);
+  } catch (e) { flash(e.message); }
+  renderTree(); renderGraph(); renderDetail(); renderLiveBar();
+}
+async function sendAction(action) {
+  const edits = {};
+  document.querySelectorAll("#pauseCard .editv").forEach((i) => { if (i.value !== i.dataset.orig) edits[i.dataset.name] = i.value; });
+  try {
+    await api("/api/control", { action, ...(Object.keys(edits).length ? { edits } : {}) });
+    if (action !== "pause") { pause = null; liveState = "running"; }
+    renderLiveBar(); renderDetail(); renderTree();
+  } catch (e) {
+    const el = $("#pauseErr"); if (el) el.textContent = e.message; else flash(e.message);
+  }
+}
+let flashTimer = null;
+function flash(msg) {
+  const el = $("#lmsg"); el.textContent = msg; el.hidden = false;
+  clearTimeout(flashTimer); flashTimer = setTimeout(() => { el.hidden = true; }, 5000);
+}
+function syncConfig(cfg) {
+  if (!cfg) return;
+  callBreaks.clear(); cfg.call_breaks.forEach((k) => callBreaks.add(k));
+  // the server stores normalised paths; keep the viewer's spelling for files it already knows
+  const known = new Map(Object.values(DATA.sources).map((s) => [s.file.toLowerCase(), s.file]));
+  lineBreaks.clear(); cfg.line_breaks.forEach(([f, l]) => lineBreaks.add((known.get(f.toLowerCase()) || f) + "\n" + l));
+  intercepts = new Set(cfg.intercepts);
+}
+function renderLiveBar() {
+  if (!LIVE) return;
+  const bar = $("#livebar"); bar.hidden = false;
+  const labels = { connecting: "Connecting…", running: "Running", paused: "Paused", finished: "Finished", disconnected: "Disconnected" };
+  $("#lstatus").className = "lstatus " + liveState;
+  $("#lstatus span").textContent = labels[liveState];
+  const ctl = canControl(), paused = liveState === "paused";
+  $("#bPause").disabled = !ctl || paused;
+  for (const id of ["#bCont", "#bInto", "#bOver", "#bOut"]) $(id).disabled = !paused;
+  $("#bIcpt").disabled = !ctl;
+  $("#nIcpt").textContent = intercepts.size ? `(${intercepts.size})` : "";
+  const nb = callBreaks.size + lineBreaks.size;
+  $("#bpinfo").innerHTML = nb && ctl ? `${nb} breakpoint${nb > 1 ? "s" : ""} <button id="bClear" class="linkbtn">clear</button>` : "";
+  $("#saved").textContent = liveState === "finished" && meta.saved_to ? "Saved to " + meta.saved_to : "";
+  document.querySelectorAll("#icptMenu input").forEach((i) => { i.checked = intercepts.has(i.value); });
+}
+function setupLiveBar() {
+  $("#icptMenu").innerHTML = Object.entries(LIVE.intercepts).map(([k, label]) =>
+    `<label><input type="checkbox" value="${esc(k)}"> ${esc(label)}</label>`).join("")
+    + `<div class="loc">Pause before the program does any of these. Then Forward or Drop it.</div>`;
+  $("#bPause").addEventListener("click", () => sendAction("pause"));
+  $("#bCont").addEventListener("click", () => sendAction("continue"));
+  $("#bInto").addEventListener("click", () => sendAction("step_into"));
+  $("#bOver").addEventListener("click", () => sendAction("step_over"));
+  $("#bOut").addEventListener("click", () => sendAction("step_out"));
+  $("#bIcpt").addEventListener("click", (e) => {
+    e.stopPropagation(); const m = $("#icptMenu"); m.hidden = !m.hidden; $("#bIcpt").setAttribute("aria-expanded", String(!m.hidden));
+  });
+  $("#icptMenu").addEventListener("change", (e) => { if (e.target.checked) intercepts.add(e.target.value); else intercepts.delete(e.target.value); pushConfig(); });
+  document.addEventListener("click", (e) => { if (!e.target.closest(".icpt")) { $("#icptMenu").hidden = true; $("#bIcpt").setAttribute("aria-expanded", "false"); } });
+  $("#bpinfo").addEventListener("click", (e) => { if (e.target.id === "bClear") { callBreaks.clear(); lineBreaks.clear(); pushConfig(); } });
+}
+
+let cursor = { c: 0, x: 0, e: 0, a: 0, s: 0 }, failures = 0, renderQueued = false, lastPauseId = null;
+function queueRender() {
+  if (renderQueued) return;
+  renderQueued = true;
+  setTimeout(() => { renderQueued = false; renderLive(); }, 200);
+}
+function renderLive() {
+  reindex(); renderHeader(); renderLiveBar(); renderTree(); renderGraph(); renderBottom();
+  // don't wipe what you're typing in the pause card
+  const typing = document.activeElement && $("#detail").contains(document.activeElement) && document.activeElement.matches("input");
+  if (!typing) renderDetail();
+}
+async function poll() {
+  try {
+    const d = await api("/api/poll?" + new URLSearchParams(cursor));
+    failures = 0;
+    if (d.final) return finish(d.final, d.state);
+    if (liveState === "connecting") liveState = "running";
+    for (const c of d.calls) DATA.calls[c.id] = c;
+    for (const c of d.calls) c.children = c.children.filter((i) => DATA.calls[i]);  // newer children arrive next poll
+    for (const e of d.events) DATA.events.push(e);
+    for (const a of d.activity) DATA.security.activity.push(a);
+    Object.assign(DATA.sources, d.sources);
+    cursor = d.cursors; liveNow = d.state.now;
+    DATA.meta.truncated = d.state.truncated;
+    syncConfig(d.state.config);
+    const p = d.state.pause;
+    pause = p; liveState = p ? "paused" : "running";
+    if (sel == null && DATA.calls.length) sel = 0;
+    if (p && p.id !== lastPauseId) {  // new pause: show it
+      lastPauseId = p.id;
+      if (p.call != null && DATA.calls[p.call]) {
+        sel = p.call; ancestors(sel).slice(1).forEach((a) => collapsed.delete(a));
+        if (!showAux && isAux(DATA.calls[sel])) { showAux = true; $("#showBuiltins").checked = true; }
+      }
+      if (layout.min.detail) toggleMin("detail");
+      renderLive();
+      const row = $(`.row[data-id="${sel}"]`); if (row) row.scrollIntoView({ block: "nearest" });
+      $("#pauseCard")?.scrollIntoView({ block: "nearest" });
+      $("#pauseCard .editv")?.focus();
+    } else queueRender();
+  } catch (e) {
+    if (++failures > 8) { liveState = "disconnected"; renderLive(); flash("Lost the connection to traceflow. The program may have been stopped."); return; }
+  }
+  setTimeout(poll, liveState === "paused" ? 350 : 150);
+}
+function finish(final, state) {
+  const keepSel = sel;
+  DATA = final; liveState = "finished"; pause = null;
+  syncConfig(state && state.config);
+  reindex();
+  if (findings.some((f) => f.severity === "high" || f.severity === "medium")) tab = "findings";
+  sel = keepSel != null && calls[keepSel] ? keepSel : (calls.length ? 0 : null);
+  renderLive();
+}
+
+function select(id, reveal) {
+  sel = id;
+  if (reveal) { if (!showAux && isAux(calls[id])) { showAux = true; $("#showBuiltins").checked = true; }
+    ancestors(id).slice(1).forEach((a) => collapsed.delete(a)); }
+  renderAll();
+  if (reveal) {
+    const el = $(`.row[data-id="${id}"]`); if (el) el.scrollIntoView({ block: "nearest" });
+    const g = $("#graph .gnode.sel"); if (g) g.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }
+}
+function renderAll() { renderTree(); renderGraph(); renderBottom(); renderDetail(); }
+
+// ---------- layout: drag the gutters to resize, minimize any panel; remembered across traces
+const LAYOUT_KEY = "traceflow.layout";
+const LAYOUT_DEFAULT = { tree: 300, detail: 480, top: 0.55, min: {} };
+const PANELS = { tree: "#treePanel", graph: "#graphPanel", out: "#outPanel", detail: "#detailPanel" };
+const PANEL_NAMES = { tree: "execution path", graph: "call graph", out: "output", detail: "inspector" };
+const ICON_MIN = `<svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2.5 6h7"/></svg>`;
+const ICON_RESTORE = `<svg viewBox="0 0 12 12" aria-hidden="true"><path d="M6 2.5v7M2.5 6h7"/></svg>`;
+const MIN_SIDE = 180, MIN_MIDDLE = 260, BAR = 38;
+const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), Math.max(lo, hi));
+let layout = structuredClone(LAYOUT_DEFAULT);
+try { Object.assign(layout, JSON.parse(localStorage.getItem(LAYOUT_KEY) || "{}")); layout.min ||= {}; } catch (e) {}
+const saveLayout = () => { try { localStorage.setItem(LAYOUT_KEY, JSON.stringify(layout)); } catch (e) {} };
+const grid = $(".grid");
+
+function applyLayout() {
+  const W = grid.clientWidth - 24, m = layout.min;
+  // keep the middle column usable however small the window gets
+  const detail = m.detail ? BAR : clamp(layout.detail, MIN_SIDE, W - MIN_MIDDLE - (m.tree ? BAR : MIN_SIDE));
+  const tree = m.tree ? BAR : clamp(layout.tree, MIN_SIDE, W - MIN_MIDDLE - detail);
+  grid.style.setProperty("--wt", tree + "px");
+  grid.style.setProperty("--wd", detail + "px");
+  grid.style.setProperty("--rt", m.graph ? "auto" : m.out ? "1fr" : layout.top + "fr");
+  grid.style.setProperty("--rb", m.out ? "auto" : m.graph ? "1fr" : (1 - layout.top) + "fr");
+  for (const [k, sel] of Object.entries(PANELS)) {
+    const p = $(sel), btn = p.querySelector(".pbtn"), isMin = !!m[k];
+    p.classList.toggle("min", isMin);
+    btn.innerHTML = isMin ? ICON_RESTORE : ICON_MIN;
+    btn.title = (isMin ? "Restore " : "Minimize ") + PANEL_NAMES[k];
+    btn.setAttribute("aria-label", btn.title);
+    btn.setAttribute("aria-expanded", String(!isMin));
+  }
+  $("#s3").classList.toggle("off", !!(m.graph || m.out));
+}
+function toggleMin(k) { layout.min[k] = !layout.min[k]; applyLayout(); saveLayout(); }
+document.addEventListener("click", (e) => {
+  const b = e.target.closest(".pbtn");
+  if (b) { e.stopPropagation(); toggleMin(b.dataset.min); return; }
+  const h = e.target.closest(".panel.min > h2");  // click anywhere on a minimized header to restore it
+  if (h) toggleMin(Object.keys(PANELS).find((k) => h.parentElement.matches(PANELS[k])));
+});
+
+function resizeTo(which, x, y) {
+  const r = grid.getBoundingClientRect();
+  if (which === "tree") layout.tree = Math.round(x - r.left - 6);
+  else if (which === "detail") layout.detail = Math.round(r.right - x - 6);
+  else layout.top = clamp((y - r.top - 6) / Math.max(r.height - 12, 1), 0.12, 0.88);
+  layout.tree = clamp(layout.tree, MIN_SIDE, 2000); layout.detail = clamp(layout.detail, MIN_SIDE, 2000);
+  applyLayout();
+}
+function unminimizeFor(which) {
+  if (which === "rows") { layout.min.graph = layout.min.out = false; } else layout.min[which] = false;
+}
+document.querySelectorAll(".split").forEach((sp) => {
+  const which = sp.dataset.split, axis = which === "rows" ? "y" : "x";
+  sp.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    try { sp.setPointerCapture(e.pointerId); } catch (err) {}
+    sp.classList.add("dragging"); document.body.classList.add("resizing-" + axis);
+    unminimizeFor(which);
+    const move = (ev) => resizeTo(which, ev.clientX, ev.clientY);
+    const up = () => {
+      sp.removeEventListener("pointermove", move); sp.removeEventListener("pointerup", up); sp.removeEventListener("pointercancel", up);
+      sp.classList.remove("dragging"); document.body.classList.remove("resizing-" + axis);
+      saveLayout();
+    };
+    sp.addEventListener("pointermove", move); sp.addEventListener("pointerup", up); sp.addEventListener("pointercancel", up);
+  });
+  sp.addEventListener("dblclick", () => {
+    if (which === "rows") layout.top = LAYOUT_DEFAULT.top; else layout[which] = LAYOUT_DEFAULT[which];
+    unminimizeFor(which); applyLayout(); saveLayout();
+  });
+  sp.addEventListener("keydown", (e) => {  // arrow keys resize; Shift for bigger steps
+    const step = e.shiftKey ? 80 : 20;
+    const d = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -1, ArrowDown: 1 }[e.key];
+    if (d == null || (axis === "x") !== (e.key === "ArrowLeft" || e.key === "ArrowRight")) return;
+    e.preventDefault();
+    unminimizeFor(which);
+    if (which === "tree") layout.tree = clamp(layout.tree + d * step, MIN_SIDE, 2000);
+    else if (which === "detail") layout.detail = clamp(layout.detail - d * step, MIN_SIDE, 2000);
+    else layout.top = clamp(layout.top + d * step / Math.max(grid.clientHeight, 1), 0.12, 0.88);
+    applyLayout(); saveLayout();
+  });
+});
+window.addEventListener("resize", applyLayout);
+if (SEC) $("#bottomTitle").textContent = "Output & security";
+applyLayout();
+
+// start on the most severe finding; otherwise the deepest user call that produced output; otherwise the entry point
+const firstOut = DATA.events.find((e) => e.type === "stdout" && e.call != null);
+const firstFinding = findings.find((f) => f.call != null);
+if (tab === "findings" && firstFinding) sel = firstFinding.call;
+else sel = firstOut ? (isAux(calls[firstOut.call]) && calls[firstOut.call].parent != null ? calls[firstOut.call].parent : firstOut.call) : 0;
+if (!calls.length) sel = null;
+if (sel != null) ancestors(sel).slice(1).forEach((a) => collapsed.delete(a));
+renderHeader();
+if (LIVE) { setupLiveBar(); renderLiveBar(); }
+renderAll();
+if (LIVE) poll();
+</script>
+</body>
+</html>

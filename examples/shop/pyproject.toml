@@ -1,0 +1,4 @@
+[project]
+name = "shop"
+version = "0.1.0"
+description = "Multi-package demo project for traceflow (run: python -m traceflow run -m shop)"
