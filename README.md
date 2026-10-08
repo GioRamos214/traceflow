@@ -1,9 +1,14 @@
 # Traceflow — runtime execution visualizer
 
 Run a Python or JavaScript/TypeScript program under observation, record everything
-that happened, and reconstruct the execution path as an interactive graph. The
-pipeline below is the Python engine; a Node.js recorder (see
-[JavaScript and TypeScript](#javascript-and-typescript)) feeds the same viewer.
+that happened, and reconstruct the execution path as an interactive graph.
+
+![Traceflow viewer — security mode on a deliberately insecure app: the call graph with flagged functions, findings mapped to the OWASP Top 10, and the inspector](examples/screenshots/Execution%20Trace%20Demo.png)
+
+*The viewer running `--security` on `examples/insecure/app.py`: the execution path and call
+graph (left/centre), findings mapped to the OWASP Top 10 (bottom), and the inspector for the
+selected call (right). The pipeline below is the Python engine; a Node.js recorder (see
+[JavaScript and TypeScript](#javascript-and-typescript)) feeds the same viewer.*
 
 ```
 Target Python program
